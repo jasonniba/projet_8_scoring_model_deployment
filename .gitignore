@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[oc]
+*.pyc
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+.venv_old/
+venv/
+
+# Environment variables
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Tests
+.pytest_cache/
+
+# Data
+*.csv
+
+# MLflow local
+mlruns/
+mlartifacts/
+artifacts/
+mlflow.db
