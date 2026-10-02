@@ -8,17 +8,21 @@ from sklearn.model_selection import train_test_split
 
 
 # =========================================================
-# 1. CHEMINS
+# CHEMINS DU PROJET
 # =========================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(
+    __file__
+).resolve().parents[2]
 
-OLD_DATA_DIR = (
+
+RAW_DATA_DIR = (
     PROJECT_ROOT.parent
     / "Projet 6"
     / "data"
     / "raw"
 )
+
 
 MODEL_PATH = (
     PROJECT_ROOT
@@ -26,107 +30,200 @@ MODEL_PATH = (
     / "credit_scoring_model"
 )
 
-REFERENCE_PATH = (
+
+DATA_DIR = (
     PROJECT_ROOT
     / "data"
-    / "reference_features.parquet"
 )
 
-SIMULATION_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "simulation_features.parquet"
+
+DATA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
 )
 
 
 # =========================================================
-# 2. CHARGEMENT DES DONNÉES DU PROJET 6
+# CHARGEMENT DU MODELE
 # =========================================================
 
-print("Chargement des données...")
+print("=" * 70)
+print("CHARGEMENT DU MODELE")
+print("=" * 70)
+
+
+model = mlflow.sklearn.load_model(
+    str(MODEL_PATH)
+)
+
+
+expected_features = list(
+    model.feature_names_in_
+)
+
+
+print(
+    "Features attendues par le modèle :",
+    len(expected_features),
+)
+
+
+# =========================================================
+# CHARGEMENT DES DONNEES HOME CREDIT
+# =========================================================
+
+print()
+print("=" * 70)
+print("CHARGEMENT DES DONNEES")
+print("=" * 70)
+
 
 app_train = pd.read_csv(
-    OLD_DATA_DIR / "application_train.csv"
+    RAW_DATA_DIR
+    / "application_train.csv"
 )
+
+
+app_test = pd.read_csv(
+    RAW_DATA_DIR
+    / "application_test.csv"
+)
+
 
 bureau = pd.read_csv(
-    OLD_DATA_DIR / "bureau.csv"
+    RAW_DATA_DIR
+    / "bureau.csv"
 )
 
-bb = pd.read_csv(
-    OLD_DATA_DIR / "bureau_balance.csv"
+
+bureau_balance = pd.read_csv(
+    RAW_DATA_DIR
+    / "bureau_balance.csv"
 )
+
 
 previous_app = pd.read_csv(
-    OLD_DATA_DIR / "previous_application.csv"
+    RAW_DATA_DIR
+    / "previous_application.csv"
 )
+
 
 installments = pd.read_csv(
-    OLD_DATA_DIR / "installments_payments.csv"
+    RAW_DATA_DIR
+    / "installments_payments.csv"
 )
+
 
 cc = pd.read_csv(
-    OLD_DATA_DIR / "credit_card_balance.csv"
+    RAW_DATA_DIR
+    / "credit_card_balance.csv"
 )
 
+
 pos_cash = pd.read_csv(
-    OLD_DATA_DIR / "POS_CASH_balance.csv"
+    RAW_DATA_DIR
+    / "POS_CASH_balance.csv"
+)
+
+
+print(
+    "application_train :",
+    app_train.shape,
+)
+
+print(
+    "application_test :",
+    app_test.shape,
 )
 
 
 # =========================================================
-# 3. DATASET PRINCIPAL
+# COPIES TRAIN / TEST
 # =========================================================
 
 train = app_train.copy()
+test = app_test.copy()
 
 
 # =========================================================
-# 4. FEATURE ENGINEERING PRINCIPAL
+# FEATURE ENGINEERING APPLICATION TRAIN / TEST
 # =========================================================
 
-train["DAYS_EMPLOYED"] = train[
-    "DAYS_EMPLOYED"
-].replace(
-    365243,
-    np.nan,
-)
+print()
+print("=" * 70)
+print("FEATURE ENGINEERING APPLICATION")
+print("=" * 70)
 
-train["AGE_YEARS"] = (
-    -train["DAYS_BIRTH"] / 365
-)
 
-train["CREDIT_INCOME_RATIO"] = (
-    train["AMT_CREDIT"]
-    / train["AMT_INCOME_TOTAL"]
-)
+for df in [
+    train,
+    test,
+]:
 
-train["ANNUITY_INCOME_RATIO"] = (
-    train["AMT_ANNUITY"]
-    / train["AMT_INCOME_TOTAL"]
-)
+    # Valeur spéciale Home Credit
+    df["DAYS_EMPLOYED"] = (
+        df["DAYS_EMPLOYED"]
+        .replace(
+            365243,
+            np.nan,
+        )
+    )
 
-train["CREDIT_TERM"] = (
-    train["AMT_ANNUITY"]
-    / train["AMT_CREDIT"]
-)
+    # Age en années
+    df["AGE_YEARS"] = (
+        -df["DAYS_BIRTH"]
+        / 365
+    )
 
-train["EXT_SOURCE_MEAN"] = train[
-    [
-        "EXT_SOURCE_1",
-        "EXT_SOURCE_2",
-        "EXT_SOURCE_3",
-    ]
-].mean(axis=1)
+    # Rapport crédit / revenus
+    df["CREDIT_INCOME_RATIO"] = (
+        df["AMT_CREDIT"]
+        / df["AMT_INCOME_TOTAL"]
+    )
+
+    # Rapport annuité / revenus
+    df["ANNUITY_INCOME_RATIO"] = (
+        df["AMT_ANNUITY"]
+        / df["AMT_INCOME_TOTAL"]
+    )
+
+    # Durée / poids du crédit
+    df["CREDIT_TERM"] = (
+        df["AMT_ANNUITY"]
+        / df["AMT_CREDIT"]
+    )
+
+    # Moyenne des scores externes
+    df["EXT_SOURCE_MEAN"] = (
+        df[
+            [
+                "EXT_SOURCE_1",
+                "EXT_SOURCE_2",
+                "EXT_SOURCE_3",
+            ]
+        ]
+        .mean(
+            axis=1
+        )
+    )
 
 
 # =========================================================
-# 5. BUREAU BALANCE
+# BUREAU BALANCE
 # =========================================================
 
-print("Agrégation bureau_balance...")
+print(
+    "Agrégation bureau_balance..."
+)
 
-bb_encode = pd.get_dummies(bb)
+
+bb_encode = pd.get_dummies(
+    bureau_balance,
+    columns=[
+        "STATUS",
+    ],
+)
+
 
 bb_agg = bb_encode.groupby(
     "SK_ID_BUREAU"
@@ -148,12 +245,18 @@ bb_agg = bb_encode.groupby(
     }
 )
 
+
 bb_agg.columns = [
     "BB_" + "_".join(col)
     for col in bb_agg.columns
 ]
 
-bb_agg = bb_agg.reset_index()
+
+bb_agg = (
+    bb_agg
+    .reset_index()
+)
+
 
 bb_agg = bb_agg.merge(
     bureau[
@@ -166,24 +269,38 @@ bb_agg = bb_agg.merge(
     how="left",
 )
 
+
 bb_agg = (
     bb_agg
-    .drop(columns="SK_ID_BUREAU")
-    .groupby("SK_ID_CURR")
+    .drop(
+        columns="SK_ID_BUREAU"
+    )
+    .groupby(
+        "SK_ID_CURR"
+    )
     .mean()
     .reset_index()
 )
 
 
 # =========================================================
-# 6. BUREAU
+# BUREAU
 # =========================================================
 
-print("Agrégation bureau...")
+print(
+    "Agrégation bureau..."
+)
+
 
 bureau_encode = pd.get_dummies(
-    bureau
+    bureau,
+    columns=[
+        "CREDIT_ACTIVE",
+        "CREDIT_CURRENCY",
+        "CREDIT_TYPE",
+    ],
 )
+
 
 bureau_agg = bureau_encode.groupby(
     "SK_ID_CURR"
@@ -225,28 +342,43 @@ bureau_agg = bureau_encode.groupby(
     }
 )
 
+
 bureau_agg.columns = [
     "BUREAU_" + "_".join(col)
     for col in bureau_agg.columns
 ]
 
-bureau_agg = bureau_agg.reset_index()
 
+bureau_agg = (
+    bureau_agg
+    .reset_index()
+)
+
+
+# Colonnes catégorielles du bureau
 
 bureau_cat_cols = [
     col
     for col in bureau_encode.columns
-    if col.startswith("CREDIT_ACTIVE_")
-    or col.startswith("CREDIT_CURRENCY_")
-    or col.startswith("CREDIT_TYPE_")
+    if (
+        col.startswith(
+            "CREDIT_ACTIVE_"
+        )
+        or col.startswith(
+            "CREDIT_CURRENCY_"
+        )
+        or col.startswith(
+            "CREDIT_TYPE_"
+        )
+    )
 ]
 
 
 bureau_cat_agg = (
     bureau_encode
-    .groupby("SK_ID_CURR")[
-        bureau_cat_cols
-    ]
+    .groupby(
+        "SK_ID_CURR"
+    )[bureau_cat_cols]
     .mean()
     .reset_index()
 )
@@ -260,17 +392,25 @@ bureau_agg = bureau_agg.merge(
 
 
 # =========================================================
-# 7. PREVIOUS APPLICATION
+# PREVIOUS APPLICATION
 # =========================================================
 
-print("Agrégation previous_application...")
+print(
+    "Agrégation previous_application..."
+)
+
 
 previous_app[
     "APP_CREDIT_RATIO"
 ] = (
-    previous_app["AMT_APPLICATION"]
-    / previous_app["AMT_CREDIT"]
+    previous_app[
+        "AMT_APPLICATION"
+    ]
+    / previous_app[
+        "AMT_CREDIT"
+    ]
 )
+
 
 previous_app[
     "APPROVED"
@@ -280,6 +420,7 @@ previous_app[
     ]
     == "Approved"
 ).astype(int)
+
 
 previous_app[
     "REFUSED"
@@ -352,19 +493,27 @@ previous_agg = previous_app.groupby(
     }
 )
 
+
 previous_agg.columns = [
     "PREV_" + "_".join(col)
     for col in previous_agg.columns
 ]
 
-previous_agg = previous_agg.reset_index()
+
+previous_agg = (
+    previous_agg
+    .reset_index()
+)
 
 
 # =========================================================
-# 8. INSTALLMENTS
+# INSTALLMENTS PAYMENTS
 # =========================================================
 
-print("Agrégation installments...")
+print(
+    "Agrégation installments_payments..."
+)
+
 
 installments[
     "PAYMENT_DELAY"
@@ -376,6 +525,7 @@ installments[
         "DAYS_INSTALMENT"
     ]
 )
+
 
 installments[
     "PAYMENT_RATIO"
@@ -436,10 +586,12 @@ installments_agg = installments.groupby(
     }
 )
 
+
 installments_agg.columns = [
     "INS_" + "_".join(col)
     for col in installments_agg.columns
 ]
+
 
 installments_agg = (
     installments_agg
@@ -448,24 +600,31 @@ installments_agg = (
 
 
 # =========================================================
-# 9. CREDIT CARD BALANCE
+# CREDIT CARD BALANCE
 # =========================================================
 
-print("Agrégation credit_card_balance...")
+print(
+    "Agrégation credit_card_balance..."
+)
+
 
 cc[
     "LIMIT_USE"
 ] = (
-    cc["AMT_BALANCE"]
+    cc[
+        "AMT_BALANCE"
+    ]
     / cc[
         "AMT_CREDIT_LIMIT_ACTUAL"
     ]
 )
 
+
 cc[
     "LATE_PAYMENT"
 ] = (
-    cc["SK_DPD"] > 0
+    cc["SK_DPD"]
+    > 0
 ).astype(int)
 
 
@@ -528,25 +687,37 @@ cc_agg = cc.groupby(
     }
 )
 
+
 cc_agg.columns = [
     "CC_" + "_".join(col)
     for col in cc_agg.columns
 ]
 
-cc_agg = cc_agg.reset_index()
+
+cc_agg = (
+    cc_agg
+    .reset_index()
+)
 
 
 # =========================================================
-# 10. POS CASH
+# POS CASH BALANCE
 # =========================================================
 
-print("Agrégation POS_CASH_balance...")
+print(
+    "Agrégation POS_CASH_balance..."
+)
+
 
 pos_cash[
     "POS_LATE_PAYMENT"
 ] = (
-    pos_cash["SK_DPD"] > 0
+    pos_cash[
+        "SK_DPD"
+    ]
+    > 0
 ).astype(int)
+
 
 pos_cash[
     "REMAINING_RATIO"
@@ -607,19 +778,28 @@ pos_agg = pos_cash.groupby(
     }
 )
 
+
 pos_agg.columns = [
     "POS_" + "_".join(col)
     for col in pos_agg.columns
 ]
 
-pos_agg = pos_agg.reset_index()
+
+pos_agg = (
+    pos_agg
+    .reset_index()
+)
 
 
 # =========================================================
-# 11. FUSION DES TABLES
+# MERGE DE TOUTES LES TABLES
 # =========================================================
 
-print("Fusion des tables...")
+print()
+print("=" * 70)
+print("FUSION DES TABLES")
+print("=" * 70)
+
 
 tables_to_merge = [
     bb_agg,
@@ -639,36 +819,100 @@ for table in tables_to_merge:
         how="left",
     )
 
+    test = test.merge(
+        table,
+        on="SK_ID_CURR",
+        how="left",
+    )
 
-# =========================================================
-# 12. CHARGEMENT DU MODÈLE
-# =========================================================
 
-print("Chargement du modèle...")
-
-model = mlflow.sklearn.load_model(
-    str(MODEL_PATH)
-)
-
-expected_features = list(
-    model.feature_names_in_
+print(
+    "Shape train après merge :",
+    train.shape,
 )
 
 print(
-    "Features attendues par le modèle :",
-    len(expected_features),
+    "Shape test après merge :",
+    test.shape,
 )
 
 
 # =========================================================
-# 13. PRÉPARATION DES FEATURES
+# ONE-HOT ENCODING
 # =========================================================
 
-y = train[
-    "TARGET"
-]
+print()
+print("=" * 70)
+print("ENCODAGE DES VARIABLES")
+print("=" * 70)
 
-X = train.drop(
+
+target = train[
+    "TARGET"
+].copy()
+
+
+train_no_target = train.drop(
+    columns=[
+        "TARGET",
+    ]
+)
+
+
+# On combine train et test uniquement pour obtenir
+# exactement les mêmes colonnes catégorielles.
+
+combined = pd.concat(
+    [
+        train_no_target,
+        test,
+    ],
+    axis=0,
+    ignore_index=True,
+)
+
+
+combined = pd.get_dummies(
+    combined,
+    dummy_na=True,
+)
+
+
+train_final = (
+    combined
+    .iloc[
+        :len(train_no_target),
+        :
+    ]
+    .copy()
+)
+
+
+train_final.index = (
+    train_no_target.index
+)
+
+
+train_final[
+    "TARGET"
+] = target.values
+
+
+# Libération du gros DataFrame combiné
+del combined
+
+
+# =========================================================
+# PREPARATION DES 401 FEATURES DU MODELE
+# =========================================================
+
+print()
+print("=" * 70)
+print("ALIGNEMENT SUR LE MODELE")
+print("=" * 70)
+
+
+X_monitor = train_final.drop(
     columns=[
         "TARGET",
         "SK_ID_CURR",
@@ -677,15 +921,20 @@ X = train.drop(
 )
 
 
-# One-hot encoding
-X = pd.get_dummies(
-    X,
+y_monitor = train_final[
+    "TARGET"
+].copy()
+
+
+# Encoder au cas où une catégorie subsiste
+X_monitor = pd.get_dummies(
+    X_monitor,
     dummy_na=True,
 )
 
 
-# Nettoyage des valeurs infinies
-X = X.replace(
+# Nettoyage des divisions par zéro
+X_monitor = X_monitor.replace(
     [
         np.inf,
         -np.inf,
@@ -694,49 +943,65 @@ X = X.replace(
 )
 
 
-# Alignement strict avec le modèle
-X = X.reindex(
+# Aligner exactement sur les features
+# attendues par le modèle de production
+X_monitor = X_monitor.reindex(
     columns=expected_features,
     fill_value=0,
 )
 
 
-# Même type que dans le notebook
-X = X.astype(
+# Réduction mémoire
+X_monitor = X_monitor.astype(
     np.float32
 )
 
 
 print(
     "Shape après alignement :",
-    X.shape,
+    X_monitor.shape,
 )
 
 
-# Vérifications
-assert (
-    X.shape[1]
-    == len(expected_features)
-)
-
-assert (
-    list(X.columns)
-    == expected_features
-)
-
-
-# =========================================================
-# 14. SPLIT TRAIN / VALIDATION
-# =========================================================
-
-X_train_small, X_valid_small, y_train_small, y_valid_small = (
-    train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        stratify=y,
-        random_state=42,
+print(
+    "Colonnes identiques au modèle :",
+    list(
+        X_monitor.columns
     )
+    == expected_features,
+)
+
+
+if X_monitor.shape[1] != len(
+    expected_features
+):
+
+    raise ValueError(
+        "Le nombre de features ne correspond pas au modèle."
+    )
+
+
+# =========================================================
+# SPLIT TRAIN / VALIDATION
+# =========================================================
+
+print()
+print("=" * 70)
+print("SPLIT TRAIN / VALIDATION")
+print("=" * 70)
+
+
+(
+    X_train_small,
+    X_valid_small,
+    y_train_small,
+    y_valid_small,
+) = train_test_split(
+    X_monitor,
+    y_monitor,
+    test_size=0.20,
+    stratify=y_monitor,
+    random_state=42,
 )
 
 
@@ -745,92 +1010,287 @@ print(
     X_train_small.shape,
 )
 
+
 print(
     "X_valid_small :",
     X_valid_small.shape,
 )
 
 
+print(
+    "y_train_small :",
+    y_train_small.shape,
+)
+
+
+print(
+    "y_valid_small :",
+    y_valid_small.shape,
+)
+
+
 # =========================================================
-# 15. DATASET DE RÉFÉRENCE
+# DATASET DE REFERENCE POUR EVIDENTLY
 # =========================================================
 
-reference_sample = (
+print()
+print("=" * 70)
+print("CREATION DU DATASET DE REFERENCE")
+print("=" * 70)
+
+
+REFERENCE_SIZE = min(
+    5000,
+    len(
+        X_train_small
+    ),
+)
+
+
+reference_features = (
     X_train_small
     .sample(
-        n=min(
-            5000,
-            len(X_train_small),
-        ),
+        n=REFERENCE_SIZE,
         random_state=42,
     )
+    .copy()
 )
 
 
-# =========================================================
-# 16. DATASET DE SIMULATION PRODUCTION
-# =========================================================
-
-simulation_sample = (
-    X_valid_small
-    .sample(
-        n=min(
-            500,
-            len(X_valid_small),
-        ),
-        random_state=42,
-    )
+REFERENCE_PATH = (
+    DATA_DIR
+    / "reference_features.parquet"
 )
 
 
-# =========================================================
-# 17. SAUVEGARDE DES FICHIERS
-# =========================================================
-
-REFERENCE_PATH.parent.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-
-reference_sample.to_parquet(
+reference_features.to_parquet(
     REFERENCE_PATH,
     index=False,
 )
 
 
-simulation_sample.to_parquet(
+print(
+    "Fichier référence :",
+    REFERENCE_PATH,
+)
+
+
+print(
+    "Shape référence :",
+    reference_features.shape,
+)
+
+
+print(
+    "Colonnes référence identiques au modèle :",
+    list(
+        reference_features.columns
+    )
+    == expected_features,
+)
+
+
+# =========================================================
+# DATASET DE SIMULATION PRODUCTION
+# =========================================================
+
+print()
+print("=" * 70)
+print("CREATION DU BATCH DE PRODUCTION SIMULEE")
+print("=" * 70)
+
+
+SIMULATION_SIZE = min(
+    500,
+    len(
+        X_valid_small
+    ),
+)
+
+
+simulation_features = (
+    X_valid_small
+    .sample(
+        n=SIMULATION_SIZE,
+        random_state=42,
+    )
+    .copy()
+)
+
+
+SIMULATION_PATH = (
+    DATA_DIR
+    / "simulation_features.parquet"
+)
+
+
+simulation_features.to_parquet(
     SIMULATION_PATH,
     index=False,
 )
 
 
+print(
+    "Fichier simulation :",
+    SIMULATION_PATH,
+)
+
+
+print(
+    "Shape simulation :",
+    simulation_features.shape,
+)
+
+
+print(
+    "Colonnes simulation identiques au modèle :",
+    list(
+        simulation_features.columns
+    )
+    == expected_features,
+)
+
+
 # =========================================================
-# 18. VÉRIFICATIONS FINALES
+# VALIDATION LABELLisee POUR LA BASELINE PREDICTIVE
 # =========================================================
 
 print()
-print("=" * 60)
+print("=" * 70)
+print("CREATION DU DATASET DE BASELINE PREDICTIVE")
+print("=" * 70)
 
-print(
-    "Référence créée avec succès."
+
+VALIDATION_SIZE = min(
+    10000,
+    len(
+        X_valid_small
+    ),
 )
 
-print(
-    "Chemin référence :",
-    REFERENCE_PATH,
+
+# On extrait 10 000 clients de la validation
+# en conservant la proportion des classes 0 / 1.
+
+if VALIDATION_SIZE < len(
+    X_valid_small
+):
+
+    (
+        validation_features,
+        _,
+        validation_target,
+        _,
+    ) = train_test_split(
+        X_valid_small,
+        y_valid_small,
+        train_size=VALIDATION_SIZE,
+        stratify=y_valid_small,
+        random_state=42,
+    )
+
+else:
+
+    validation_features = (
+        X_valid_small.copy()
+    )
+
+    validation_target = (
+        y_valid_small.copy()
+    )
+
+
+# Vérification de l'ordre des lignes
+validation_target = (
+    validation_target
+    .loc[
+        validation_features.index
+    ]
 )
 
-print(
-    "Shape référence :",
-    reference_sample.shape,
+
+VALIDATION_FEATURES_PATH = (
+    DATA_DIR
+    / "validation_features.parquet"
 )
 
+
+VALIDATION_TARGET_PATH = (
+    DATA_DIR
+    / "validation_target.parquet"
+)
+
+
+validation_features.to_parquet(
+    VALIDATION_FEATURES_PATH,
+    index=False,
+)
+
+
+validation_target.reset_index(
+    drop=True
+).to_frame(
+    name="TARGET"
+).to_parquet(
+    VALIDATION_TARGET_PATH,
+    index=False,
+)
+
+
 print(
-    "Colonnes référence identiques au modèle :",
-    list(reference_sample.columns)
+    "Fichier validation features :",
+    VALIDATION_FEATURES_PATH,
+)
+
+
+print(
+    "Fichier validation target :",
+    VALIDATION_TARGET_PATH,
+)
+
+
+print(
+    "Shape validation baseline :",
+    validation_features.shape,
+)
+
+
+print(
+    "Shape target baseline :",
+    validation_target.shape,
+)
+
+
+print(
+    "Colonnes validation identiques au modèle :",
+    list(
+        validation_features.columns
+    )
     == expected_features,
 )
+
+
+print(
+    "Répartition TARGET :"
+)
+
+
+print(
+    validation_target
+    .value_counts()
+    .sort_index()
+)
+
+
+# =========================================================
+# VERIFICATIONS FINALES
+# =========================================================
+
+print()
+print("=" * 70)
+print("VERIFICATIONS FINALES")
+print("=" * 70)
+
 
 print(
     "Fichier référence existe :",
@@ -838,31 +1298,25 @@ print(
 )
 
 
-print()
-
-print(
-    "Batch de simulation créé avec succès."
-)
-
-print(
-    "Chemin simulation :",
-    SIMULATION_PATH,
-)
-
-print(
-    "Shape simulation :",
-    simulation_sample.shape,
-)
-
-print(
-    "Colonnes simulation identiques au modèle :",
-    list(simulation_sample.columns)
-    == expected_features,
-)
-
 print(
     "Fichier simulation existe :",
     SIMULATION_PATH.exists(),
 )
 
-print("=" * 60)
+
+print(
+    "Fichier validation features existe :",
+    VALIDATION_FEATURES_PATH.exists(),
+)
+
+
+print(
+    "Fichier validation target existe :",
+    VALIDATION_TARGET_PATH.exists(),
+)
+
+
+print()
+print("=" * 70)
+print("BUILD REFERENCE TERMINE")
+print("=" * 70)
