@@ -29,3 +29,9 @@ mlruns/
 mlartifacts/
 artifacts/
 mlflow.db
+
+# Monitoring generated data
+*.parquet
+
+# Evidently generated reports
+reports/

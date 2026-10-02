@@ -8,3 +8,7 @@ scipy==1.16.3
 pyarrow==16.1.0
 cloudpickle==3.0.0
 requests
+psycopg[binary]
+elasticsearch==8.15.1
+evidently==0.7.23
+streamlit==1.64.0
