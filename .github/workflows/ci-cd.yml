@@ -14,15 +14,14 @@ on:
 
 jobs:
 
+  # ======================================================
   # 1. TESTS
-  
+  # ======================================================
+
   tests:
     name: Run API tests
     runs-on: ubuntu-latest
-
-    environment:
-      name: test
-      deployment: false
+    environment: test
 
     steps:
       - name: Checkout repository
@@ -65,22 +64,27 @@ jobs:
 
 
   # ======================================================
-  # 3. DEPLOIEMENT PRODUCTION
+  # 3. DEPLOIEMENT RENDER
   # ======================================================
 
   deploy-render:
     name: Deploy to Render
     runs-on: ubuntu-latest
     needs: docker-build
-
-    environment:
-      name: prod
-      url: https://projet-8-scoring-model-deployment-1.onrender.com
+    environment: prod
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Trigger Render deployment
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          curl --fail --show-error --silent \
-            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          echo "Deploying Git commit: $GITHUB_SHA"
+
+          curl \
+            --fail-with-body \
+            --show-error \
+            --silent \
+            --request POST \
+            "${RENDER_DEPLOY_HOOK_URL}&ref=${GITHUB_SHA}"
