@@ -1,8 +1,9 @@
+import json
 import time
 from pathlib import Path
 
-import mlflow.sklearn
 import numpy as np
+import onnxruntime as ort
 import pandas as pd
 
 from fastapi import FastAPI, HTTPException
@@ -25,10 +26,10 @@ from src.monitoring.logger import (
 app = FastAPI(
     title="Credit Scoring API",
     description=(
-        "API de scoring permettant de calculer "
-        "le risque de défaut d'un client."
+        "API de scoring de crédit utilisant "
+        "ONNX Runtime."
     ),
-    version="1.0.0",
+    version="3.0.0",
 )
 
 
@@ -42,33 +43,112 @@ PROJECT_ROOT = (
     .parents[2]
 )
 
-MODEL_PATH = (
+MODEL_DIR = (
     PROJECT_ROOT
     / "models"
-    / "credit_scoring_model"
+    / "credit_scoring_model_onnx"
+)
+
+ONNX_MODEL_PATH = (
+    MODEL_DIR
+    / "model.onnx"
+)
+
+METADATA_PATH = (
+    MODEL_DIR
+    / "metadata.json"
+)
+
+SCORING_CLIENTS_PATH = (
+    MODEL_DIR
+    / "scoring_clients.parquet"
 )
 
 
 # =========================================================
-# CHARGEMENT DU MODELE
+# CHARGEMENT DES METADONNEES
 # =========================================================
 
-model = mlflow.sklearn.load_model(
-    str(MODEL_PATH)
-)
+with open(
+    METADATA_PATH,
+    "r",
+    encoding="utf-8",
+) as file:
 
-EXPECTED_FEATURES = list(
-    model.feature_names_in_
-)
+    metadata = json.load(file)
 
-MODEL_CLASSES = list(
-    model.named_steps[
-        "classifier"
-    ].classes_
+
+EXPECTED_FEATURES = metadata[
+    "features"
+]
+
+MODEL_CLASSES = np.asarray(
+    metadata["classes"]
 )
 
 DEFAULT_CLASS_INDEX = (
-    MODEL_CLASSES.index(1)
+    list(MODEL_CLASSES)
+    .index(1)
+)
+
+
+# =========================================================
+# CHARGEMENT DES CLIENTS
+# =========================================================
+
+scoring_clients = pd.read_parquet(
+    SCORING_CLIENTS_PATH
+)
+
+
+if "SK_ID_CURR" not in scoring_clients.columns:
+
+    raise RuntimeError(
+        "La colonne SK_ID_CURR est absente "
+        "de scoring_clients.parquet."
+    )
+
+
+scoring_clients = (
+    scoring_clients
+    .set_index("SK_ID_CURR")
+)
+
+
+# =========================================================
+# VERIFICATION DES FEATURES
+# =========================================================
+
+missing_model_features = (
+    set(EXPECTED_FEATURES)
+    - set(scoring_clients.columns)
+)
+
+
+if missing_model_features:
+
+    raise RuntimeError(
+        "Certaines features attendues par le modèle "
+        "sont absentes de scoring_clients.parquet."
+    )
+
+
+# =========================================================
+# CHARGEMENT DU MODELE ONNX
+# =========================================================
+
+onnx_session = ort.InferenceSession(
+    str(ONNX_MODEL_PATH),
+    providers=[
+        "CPUExecutionProvider"
+    ],
+)
+
+
+ONNX_INPUT_NAME = (
+    onnx_session
+    .get_inputs()[0]
+    .name
 )
 
 
@@ -78,10 +158,7 @@ DEFAULT_CLASS_INDEX = (
 
 class PredictionRequest(BaseModel):
 
-    features: dict[
-        str,
-        float | None,
-    ]
+    client_id: int
 
 
 # =========================================================
@@ -92,9 +169,14 @@ class PredictionRequest(BaseModel):
 def root():
 
     return {
-        "message": (
-            "Credit Scoring API is running"
-        )
+        "message":
+            "Credit Scoring API is running",
+
+        "inference_engine":
+            "ONNX Runtime",
+
+        "input":
+            "client_id",
     }
 
 
@@ -106,14 +188,49 @@ def root():
 def health():
 
     return {
-        "status": "ok",
-        "model_loaded": True,
-        "model_type": (
-            type(model).__name__
-        ),
-        "expected_features": (
-            len(EXPECTED_FEATURES)
-        ),
+        "status":
+            "ok",
+
+        "model_loaded":
+            True,
+
+        "model_type":
+            "ONNX Runtime",
+
+        "expected_features":
+            len(EXPECTED_FEATURES),
+
+        "clients_available":
+            len(scoring_clients),
+
+        "input_type":
+            "client_id",
+    }
+
+
+# =========================================================
+# EXEMPLES DE CLIENTS
+# =========================================================
+
+@app.get("/clients")
+def clients():
+
+    client_ids = (
+        scoring_clients
+        .index
+        .tolist()[:10]
+    )
+
+    return {
+        "available_clients":
+            len(scoring_clients),
+
+        "examples":
+            [
+                int(client_id)
+                for client_id
+                in client_ids
+            ],
     }
 
 
@@ -126,62 +243,42 @@ def predict(
     request: PredictionRequest,
 ):
 
-    # -----------------------------------------------------
-    # DEBUT DU TRAITEMENT
-    # -----------------------------------------------------
-
     request_start = (
         time.perf_counter()
     )
 
-
-    # -----------------------------------------------------
-    # VALIDATION DES FEATURES
-    # -----------------------------------------------------
-
-    received_features = set(
-        request.features.keys()
-    )
-
-    expected_features = set(
-        EXPECTED_FEATURES
-    )
-
-    missing_features = (
-        expected_features
-        - received_features
-    )
-
-    unknown_features = (
-        received_features
-        - expected_features
-    )
+    client_id = request.client_id
 
 
-    # -----------------------------------------------------
-    # REQUETE INVALIDE
-    # -----------------------------------------------------
+    # =====================================================
+    # VERIFICATION CLIENT
+    # =====================================================
 
-    if (
-        missing_features
-        or unknown_features
-    ):
+    if client_id not in scoring_clients.index:
 
         request_duration_ms = (
             time.perf_counter()
             - request_start
         ) * 1000
 
+
         error_message = (
-            "Missing or unknown features"
+            f"Client {client_id} introuvable."
         )
 
 
-        # Stockage PostgreSQL
         save_error(
-            features=request.features,
-            status_code=422,
-            error_message=error_message,
+            features={
+                "client_id":
+                    client_id
+            },
+
+            status_code=404,
+
+            error_message=(
+                error_message
+            ),
+
             request_duration_ms=round(
                 request_duration_ms,
                 3,
@@ -189,130 +286,83 @@ def predict(
         )
 
 
-        # Log Elasticsearch
         log_event(
             {
-                "event": (
-                    "prediction_error"
-                ),
+                "event":
+                    "prediction_error",
 
-                "status_code": 422,
+                "status_code":
+                    404,
 
-                "error_message": (
-                    error_message
-                ),
+                "client_id":
+                    client_id,
 
-                "request_duration_ms": (
+                "error_message":
+                    error_message,
+
+                "request_duration_ms":
                     round(
                         request_duration_ms,
                         3,
-                    )
-                ),
-
-                "features": (
-                    request.features
-                ),
-
-                "missing_features_count": (
-                    len(
-                        missing_features
-                    )
-                ),
-
-                "unknown_features_count": (
-                    len(
-                        unknown_features
-                    )
-                ),
+                    ),
             }
         )
 
 
-        # Réponse API 422
         raise HTTPException(
-            status_code=422,
+            status_code=404,
+
             detail={
-                "message": (
+                "message":
                     error_message
-                ),
-
-                "missing_features_count": (
-                    len(
-                        missing_features
-                    )
-                ),
-
-                "unknown_features_count": (
-                    len(
-                        unknown_features
-                    )
-                ),
-
-                "missing_features": sorted(
-                    missing_features
-                ),
-
-                "unknown_features": sorted(
-                    unknown_features
-                ),
             },
         )
 
 
-    # -----------------------------------------------------
-    # CONSTRUCTION DU DATAFRAME
-    # -----------------------------------------------------
+    # =====================================================
+    # RECUPERATION DES 401 FEATURES
+    # =====================================================
 
-    client_df = pd.DataFrame(
-        [
-            [
-                request.features[
-                    feature
-                ]
-                for feature
-                in EXPECTED_FEATURES
-            ]
-        ],
-        columns=EXPECTED_FEATURES,
+    client_features = (
+        scoring_clients
+        .loc[
+            client_id,
+            EXPECTED_FEATURES,
+        ]
     )
 
 
-    # -----------------------------------------------------
+    # =====================================================
+    # PREPARATION POUR ONNX
+    # =====================================================
+
+    client_array = (
+        client_features
+        .to_numpy(
+            dtype=np.float32
+        )
+        .reshape(
+            1,
+            -1,
+        )
+    )
+
+
+    # =====================================================
     # INFERENCE
-    # -----------------------------------------------------
+    # =====================================================
 
     inference_start = (
         time.perf_counter()
     )
 
 
-    # Une seule traversée du modèle
-    probabilities = (
-        model.predict_proba(
-            client_df
-        )[0]
-    )
-
-
-    # Classe correspondant à la probabilité maximale
-    prediction_index = int(
-        np.argmax(
-            probabilities
-        )
-    )
-
-    prediction = (
-        MODEL_CLASSES[
-            prediction_index
-        ]
-    )
-
-
-    # Probabilité de la classe 1 = défaut
-    default_probability = (
-        probabilities[
-            DEFAULT_CLASS_INDEX
-        ]
+    outputs = onnx_session.run(
+        None,
+        {
+            ONNX_INPUT_NAME:
+                client_array
+        },
     )
 
 
@@ -322,9 +372,54 @@ def predict(
     ) * 1000
 
 
-    # -----------------------------------------------------
-    # DUREE DU TRAITEMENT AVANT MONITORING
-    # -----------------------------------------------------
+    prediction = int(
+        np.asarray(
+            outputs[0]
+        )[0]
+    )
+
+
+    probabilities = np.asarray(
+        outputs[1]
+    )[0]
+
+
+    default_probability = float(
+        probabilities[
+            DEFAULT_CLASS_INDEX
+        ]
+    )
+
+
+    # =====================================================
+    # FEATURES POUR LE MONITORING
+    # =====================================================
+
+    features_for_storage = {}
+
+
+    for feature in EXPECTED_FEATURES:
+
+        value = client_features[
+            feature
+        ]
+
+        if pd.isna(value):
+
+            features_for_storage[
+                feature
+            ] = None
+
+        else:
+
+            features_for_storage[
+                feature
+            ] = float(value)
+
+
+    # =====================================================
+    # TEMPS DE TRAITEMENT API
+    # =====================================================
 
     request_duration_ms = (
         time.perf_counter()
@@ -332,87 +427,98 @@ def predict(
     ) * 1000
 
 
-    # -----------------------------------------------------
-    # STOCKAGE POSTGRESQL
-    # -----------------------------------------------------
+    # =====================================================
+    # POSTGRESQL
+    # =====================================================
 
     save_prediction(
-        features=request.features,
-        prediction=int(
-            prediction
-        ),
-        default_probability=float(
+        features=features_for_storage,
+
+        prediction=prediction,
+
+        default_probability=(
             default_probability
         ),
+
         inference_time_ms=round(
             inference_time_ms,
             3,
         ),
+
         request_duration_ms=round(
             request_duration_ms,
             3,
         ),
+
         status_code=200,
     )
 
 
-    # -----------------------------------------------------
-    # LOG ELASTICSEARCH
-    # -----------------------------------------------------
+    # =====================================================
+    # ELASTICSEARCH
+    # =====================================================
 
     log_event(
         {
-            "event": (
-                "prediction_success"
-            ),
+            "event":
+                "prediction_success",
 
-            "status_code": 200,
+            "status_code":
+                200,
 
-            "prediction": int(
-                prediction
-            ),
+            "client_id":
+                client_id,
 
-            "default_probability": float(
-                default_probability
-            ),
+            "prediction":
+                prediction,
 
-            "inference_time_ms": round(
-                inference_time_ms,
-                3,
-            ),
+            "default_probability":
+                default_probability,
 
-            "request_duration_ms": round(
-                request_duration_ms,
-                3,
-            ),
+            "inference_time_ms":
+                round(
+                    inference_time_ms,
+                    3,
+                ),
 
-            "features": (
-                request.features
-            ),
+            "request_duration_ms":
+                round(
+                    request_duration_ms,
+                    3,
+                ),
+
+            "inference_engine":
+                "onnxruntime",
         }
     )
 
 
-    # -----------------------------------------------------
-    # REPONSE API
-    # -----------------------------------------------------
+    # =====================================================
+    # REPONSE UTILISATEUR
+    # =====================================================
 
     return {
-        "prediction": int(
-            prediction
-        ),
+        "client_id":
+            client_id,
 
-        "default_probability": float(
-            default_probability
-        ),
+        "prediction":
+            prediction,
 
-        "inference_time_ms": round(
-            inference_time_ms,
-            3,
-        ),
+        "default_probability":
+            round(
+                default_probability,
+                6,
+            ),
 
-        "request_duration_ms": round(
-            request_duration_ms,
-            3,
-        ),
+        "inference_time_ms":
+            round(
+                inference_time_ms,
+                3,
+            ),
+
+        "request_duration_ms":
+            round(
+                request_duration_ms,
+                3,
+            ),
     }

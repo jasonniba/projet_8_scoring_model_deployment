@@ -13,3 +13,4 @@ psycopg-pool
 elasticsearch==8.15.1
 evidently==0.7.23
 streamlit==1.64.0
+onnxruntime==1.31.0

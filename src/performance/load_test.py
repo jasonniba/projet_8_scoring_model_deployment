@@ -1,36 +1,23 @@
 import argparse
+import statistics
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
+
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed,
+)
 
 import numpy as np
-import pandas as pd
 import requests
 
 
 # =========================================================
-# CONFIGURATION
+# SESSIONS HTTP PAR THREAD
 # =========================================================
-
-PROJECT_ROOT = Path(
-    __file__
-).resolve().parents[2]
-
-
-SIMULATION_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "simulation_features.parquet"
-)
-
 
 thread_local = threading.local()
 
-
-# =========================================================
-# SESSION HTTP PAR THREAD
-# =========================================================
 
 def get_session():
 
@@ -47,46 +34,12 @@ def get_session():
 
 
 # =========================================================
-# PREPARATION DES PAYLOADS
-# =========================================================
-
-def load_payloads():
-
-    df = pd.read_parquet(
-        SIMULATION_PATH
-    )
-
-    payloads = []
-
-    for _, row in df.iterrows():
-
-        features = {
-            column: (
-                None
-                if pd.isna(value)
-                else float(value)
-            )
-            for column, value
-            in row.items()
-        }
-
-        payloads.append(
-            {
-                "features": features
-            }
-        )
-
-    return payloads
-
-
-# =========================================================
 # UNE REQUETE
 # =========================================================
 
 def send_request(
-    url,
-    payload,
-    timeout,
+    predict_url,
+    client_id,
 ):
 
     session = get_session()
@@ -96,353 +49,397 @@ def send_request(
     try:
 
         response = session.post(
-            url,
-            json=payload,
-            timeout=timeout,
+            predict_url,
+            json={
+                "client_id":
+                    int(client_id)
+            },
+            timeout=30,
         )
 
-        latency_ms = (
+        elapsed_ms = (
             time.perf_counter()
             - start
         ) * 1000
 
         return {
-            "success": (
-                response.status_code
-                == 200
-            ),
-            "status_code": (
-                response.status_code
-            ),
-            "latency_ms": (
-                latency_ms
-            ),
-            "error": None,
+            "success":
+                response.status_code == 200,
+
+            "status_code":
+                response.status_code,
+
+            "latency_ms":
+                elapsed_ms,
         }
 
-    except requests.RequestException as exc:
+    except requests.RequestException:
 
-        latency_ms = (
+        elapsed_ms = (
             time.perf_counter()
             - start
         ) * 1000
 
         return {
-            "success": False,
-            "status_code": None,
-            "latency_ms": (
-                latency_ms
-            ),
-            "error": str(exc),
+            "success":
+                False,
+
+            "status_code":
+                None,
+
+            "latency_ms":
+                elapsed_ms,
         }
 
 
 # =========================================================
-# TEST DE CHARGE
+# ARGUMENTS
 # =========================================================
 
-def run_load_test(
-    url,
-    payloads,
-    total_requests,
-    concurrency,
-    timeout,
-):
+parser = argparse.ArgumentParser(
+    description=(
+        "Load test de l'API "
+        "Credit Scoring"
+    )
+)
 
-    print()
-    print("=" * 70)
-    print("LOAD TEST - CREDIT SCORING API")
-    print("=" * 70)
+parser.add_argument(
+    "--requests",
+    type=int,
+    default=1000,
+    help="Nombre total de requêtes",
+)
 
-    print(
-        "URL :",
-        url,
+parser.add_argument(
+    "--concurrency",
+    type=int,
+    default=20,
+    help="Nombre de requêtes concurrentes",
+)
+
+parser.add_argument(
+    "--url",
+    type=str,
+    default="http://127.0.0.1:8000",
+    help="URL de base de l'API",
+)
+
+args = parser.parse_args()
+
+
+# =========================================================
+# URL
+# =========================================================
+
+base_url = args.url.rstrip("/")
+
+predict_url = (
+    f"{base_url}/predict"
+)
+
+clients_url = (
+    f"{base_url}/clients"
+)
+
+
+# =========================================================
+# RECUPERATION DES CLIENTS
+# =========================================================
+
+print()
+print("=" * 70)
+print("LOAD TEST - CREDIT SCORING API")
+print("=" * 70)
+
+print(
+    f"URL : {predict_url}"
+)
+
+print(
+    f"Nombre de requêtes : "
+    f"{args.requests}"
+)
+
+print(
+    f"Concurrence : "
+    f"{args.concurrency}"
+)
+
+
+response = requests.get(
+    clients_url,
+    timeout=10,
+)
+
+response.raise_for_status()
+
+clients_data = response.json()
+
+client_ids = (
+    clients_data[
+        "examples"
+    ]
+)
+
+
+if not client_ids:
+
+    raise RuntimeError(
+        "Aucun client disponible "
+        "pour le test."
     )
 
-    print(
-        "Nombre de requêtes :",
-        total_requests,
-    )
 
-    print(
-        "Concurrence :",
-        concurrency,
-    )
+print(
+    f"Clients utilisés : "
+    f"{len(client_ids)}"
+)
 
-    print()
 
-    # -----------------------------------------------------
-    # Warm-up
-    # -----------------------------------------------------
+# =========================================================
+# WARM-UP
+# =========================================================
 
-    print(
-        "Warm-up..."
-    )
+print()
+print("Warm-up...")
 
-    for i in range(3):
+for client_id in client_ids:
 
-        send_request(
-            url,
-            payloads[
-                i % len(payloads)
-            ],
-            timeout,
+    warmup_response = (
+        requests.post(
+            predict_url,
+            json={
+                "client_id":
+                    int(client_id)
+            },
+            timeout=30,
         )
-
-    print(
-        "Warm-up terminé."
     )
 
-    # -----------------------------------------------------
-    # Test
-    # -----------------------------------------------------
+    warmup_response.raise_for_status()
 
-    start_test = (
-        time.perf_counter()
-    )
 
-    results = []
+print("Warm-up terminé.")
 
-    with ThreadPoolExecutor(
-        max_workers=concurrency
-    ) as executor:
 
-        futures = []
+# =========================================================
+# PREPARATION DES REQUETES
+# =========================================================
 
-        for i in range(
-            total_requests
-        ):
+request_client_ids = [
 
-            payload = payloads[
-                i % len(payloads)
-            ]
-
-            future = executor.submit(
-                send_request,
-                url,
-                payload,
-                timeout,
-            )
-
-            futures.append(
-                future
-            )
-
-        for future in as_completed(
-            futures
-        ):
-
-            results.append(
-                future.result()
-            )
-
-    total_duration = (
-        time.perf_counter()
-        - start_test
-    )
-
-    # -----------------------------------------------------
-    # Analyse
-    # -----------------------------------------------------
-
-    successes = [
-        result
-        for result in results
-        if result[
-            "success"
-        ]
+    client_ids[
+        i % len(client_ids)
     ]
 
-    errors = [
-        result
-        for result in results
-        if not result[
-            "success"
-        ]
+    for i in range(
+        args.requests
+    )
+]
+
+
+# =========================================================
+# LOAD TEST
+# =========================================================
+
+start_total = (
+    time.perf_counter()
+)
+
+
+results = []
+
+
+with ThreadPoolExecutor(
+    max_workers=args.concurrency
+) as executor:
+
+    futures = [
+
+        executor.submit(
+            send_request,
+            predict_url,
+            client_id,
+        )
+
+        for client_id
+        in request_client_ids
     ]
 
-    success_latencies = np.array(
-        [
-            result[
-                "latency_ms"
-            ]
-            for result
-            in successes
+
+    for future in as_completed(
+        futures
+    ):
+
+        results.append(
+            future.result()
+        )
+
+
+total_duration = (
+    time.perf_counter()
+    - start_total
+)
+
+
+# =========================================================
+# RESULTATS
+# =========================================================
+
+successes = [
+    result
+    for result in results
+    if result["success"]
+]
+
+errors = [
+    result
+    for result in results
+    if not result["success"]
+]
+
+latencies = np.asarray(
+    [
+        result[
+            "latency_ms"
         ]
-    )
+        for result
+        in results
+    ]
+)
 
-    success_count = len(
-        successes
-    )
 
-    error_count = len(
-        errors
-    )
+successful_throughput = (
+    len(successes)
+    / total_duration
+)
 
-    error_rate = (
-        error_count
-        / total_requests
-        * 100
-    )
+sent_throughput = (
+    len(results)
+    / total_duration
+)
 
-    throughput = (
-        success_count
-        / total_duration
-    )
+error_rate = (
+    len(errors)
+    / len(results)
+    * 100
+)
 
-    attempted_throughput = (
-        total_requests
-        / total_duration
-    )
 
-    # -----------------------------------------------------
-    # RESULTATS
-    # -----------------------------------------------------
+print()
+print("=" * 70)
+print("RESULTATS")
+print("=" * 70)
 
-    print()
-    print("=" * 70)
-    print("RESULTATS")
-    print("=" * 70)
+print(
+    f"Durée totale        : "
+    f"{total_duration:.3f} sec"
+)
 
-    print(
-        f"Durée totale        : "
-        f"{total_duration:.3f} sec"
-    )
+print(
+    f"Succès              : "
+    f"{len(successes)}"
+)
 
-    print(
-        f"Succès              : "
-        f"{success_count}"
-    )
+print(
+    f"Erreurs             : "
+    f"{len(errors)}"
+)
 
-    print(
-        f"Erreurs              : "
-        f"{error_count}"
-    )
+print(
+    f"Taux d'erreur        : "
+    f"{error_rate:.2f} %"
+)
 
-    print(
-        f"Taux d'erreur        : "
-        f"{error_rate:.2f} %"
-    )
+print(
+    f"Débit réussi         : "
+    f"{successful_throughput:.2f} req/s"
+)
 
-    print(
-        f"Débit réussi         : "
-        f"{throughput:.2f} req/s"
-    )
+print(
+    f"Débit envoyé         : "
+    f"{sent_throughput:.2f} req/s"
+)
 
-    print(
-        f"Débit envoyé         : "
-        f"{attempted_throughput:.2f} req/s"
-    )
 
-    if len(
-        success_latencies
-    ) > 0:
+print()
+print("LATENCE HTTP CLIENT")
+print("-" * 70)
 
-        print()
-        print(
-            "LATENCE HTTP CLIENT"
-        )
+print(
+    f"Moyenne : "
+    f"{latencies.mean():.3f} ms"
+)
 
-        print(
-            "-" * 70
-        )
+print(
+    f"P50     : "
+    f"{np.percentile(latencies, 50):.3f} ms"
+)
 
-        print(
-            f"Moyenne : "
-            f"{success_latencies.mean():.3f} ms"
-        )
+print(
+    f"P95     : "
+    f"{np.percentile(latencies, 95):.3f} ms"
+)
 
-        print(
-            f"P50     : "
-            f"{np.percentile(success_latencies, 50):.3f} ms"
-        )
+print(
+    f"P99     : "
+    f"{np.percentile(latencies, 99):.3f} ms"
+)
 
-        print(
-            f"P95     : "
-            f"{np.percentile(success_latencies, 95):.3f} ms"
-        )
+print(
+    f"Min     : "
+    f"{latencies.min():.3f} ms"
+)
 
-        print(
-            f"P99     : "
-            f"{np.percentile(success_latencies, 99):.3f} ms"
-        )
+print(
+    f"Max     : "
+    f"{latencies.max():.3f} ms"
+)
 
-        print(
-            f"Min     : "
-            f"{success_latencies.min():.3f} ms"
-        )
 
-        print(
-            f"Max     : "
-            f"{success_latencies.max():.3f} ms"
-        )
+# =========================================================
+# CODES D'ERREUR EVENTUELS
+# =========================================================
 
-    if errors:
+if errors:
 
-        print()
-        print(
-            "PREMIERES ERREURS"
-        )
+    status_codes = {}
 
-        print(
-            "-" * 70
-        )
+    for error in errors:
 
-        for error in errors[:5]:
+        code = error[
+            "status_code"
+        ]
 
-            print(
-                error
+        status_codes[
+            code
+        ] = (
+            status_codes.get(
+                code,
+                0,
             )
+            + 1
+        )
 
     print()
-    print("=" * 70)
-    print("LOAD TEST TERMINE")
-    print("=" * 70)
-
-
-# =========================================================
-# MAIN
-# =========================================================
-
-if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--url",
-        default=(
-            "http://127.0.0.1:8000/predict"
-        ),
+    print(
+        "ERREURS PAR STATUS"
     )
 
-    parser.add_argument(
-        "--requests",
-        type=int,
-        default=200,
+    print(
+        "-" * 70
     )
 
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=5,
-    )
+    for code, count in (
+        status_codes.items()
+    ):
 
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=30,
-    )
+        print(
+            f"{code}: {count}"
+        )
 
-    args = parser.parse_args()
 
-    payloads = (
-        load_payloads()
-    )
-
-    run_load_test(
-        url=args.url,
-        payloads=payloads,
-        total_requests=args.requests,
-        concurrency=args.concurrency,
-        timeout=args.timeout,
-    )
+print()
+print("=" * 70)
+print("LOAD TEST TERMINE")
+print("=" * 70)
