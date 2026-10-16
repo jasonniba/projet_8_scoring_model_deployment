@@ -3,6 +3,8 @@ name: Credit Scoring CI/CD
 on:
   push:
     branches:
+      - dev
+      - test
       - main
 
   pull_request:
@@ -14,14 +16,14 @@ on:
 
 jobs:
 
-  # ======================================================
-  # 1. TESTS
-  # ======================================================
-
+  # =========================================================
+  # 1. TESTS AUTOMATISES
+  # =========================================================
   tests:
     name: Run API tests
     runs-on: ubuntu-latest
-    environment: test
+
+
 
     steps:
       - name: Checkout repository
@@ -45,10 +47,9 @@ jobs:
           python -m pytest tests/test_api.py -v
 
 
-  # ======================================================
-  # 2. BUILD DOCKER
-  # ======================================================
-
+  # =========================================================
+  # 2. BUILD DE L'IMAGE DOCKER
+  # =========================================================
   docker-build:
     name: Build Docker image
     runs-on: ubuntu-latest
@@ -63,24 +64,86 @@ jobs:
           docker build -t credit-scoring-api .
 
 
-  # ======================================================
-  # 3. DEPLOIEMENT RENDER
-  # ======================================================
-
-  deploy-render:
-    name: Deploy to Render
+  # =========================================================
+  # 3. DEPLOIEMENT DEV
+  # Branche dev -> Render DEV
+  # =========================================================
+  deploy-dev:
+    name: Deploy DEV to Render
     runs-on: ubuntu-latest
     needs: docker-build
-    environment: prod
 
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+
+    environment: dev
 
     steps:
-      - name: Trigger Render deployment
+      - name: Trigger Render DEV deployment
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
         run: |
-          echo "Deploying Git commit: $GITHUB_SHA"
+          echo "Deploying DEV commit: $GITHUB_SHA"
+
+          curl \
+            --fail-with-body \
+            --show-error \
+            --silent \
+            --request POST \
+            "${RENDER_DEPLOY_HOOK_URL}&ref=${GITHUB_SHA}"
+
+
+  # =========================================================
+  # 4. DEPLOIEMENT TEST
+  # Branche test -> Render TEST
+  # =========================================================
+  deploy-test:
+    name: Deploy TEST to Render
+    runs-on: ubuntu-latest
+    needs: docker-build
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/test'
+
+    environment: test
+
+    steps:
+      - name: Trigger Render TEST deployment
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+        run: |
+          echo "Deploying TEST commit: $GITHUB_SHA"
+
+          curl \
+            --fail-with-body \
+            --show-error \
+            --silent \
+            --request POST \
+            "${RENDER_DEPLOY_HOOK_URL}&ref=${GITHUB_SHA}"
+
+
+  # =========================================================
+  # 5. DEPLOIEMENT PRODUCTION
+  # Branche main -> Render PROD
+  # =========================================================
+  deploy-prod:
+    name: Deploy PROD to Render
+    runs-on: ubuntu-latest
+    needs: docker-build
+
+
+    
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    environment: prod
+
+    steps:
+      - name: Trigger Render PROD deployment
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+        run: |
+          echo "Deploying PROD commit: $GITHUB_SHA"
 
           curl \
             --fail-with-body \
